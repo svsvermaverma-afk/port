@@ -5,7 +5,8 @@ import zipfile
 import base64
 import io
 import re
-import requests
+import gdown
+from PIL import Image
 
 # ----------------- Directories Setup -----------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -20,7 +21,7 @@ for d in [EXCEL_DIR, PHOTOS_DIR, OUTPUT_DIR]:
 SAVED_EXCEL_PATH = os.path.join(EXCEL_DIR, "all_school_master_data.xlsx")
 SAVED_FORM_DATA_PATH = os.path.join(EXCEL_DIR, "form_sync_data.csv")
 
-st.set_page_config(page_title="School Portfolio Generator & Form Sync", layout="wide")
+st.set_page_config(page_title="Complete Student Portfolio Generator", layout="wide")
 
 # ----------------- Helper Functions -----------------
 def clean_val(val, default="—"):
@@ -31,45 +32,46 @@ def clean_val(val, default="—"):
         val_str = val_str[:-2]
     return val_str if val_str != "" else default
 
-def extract_drive_id(url):
-    """Google Drive शेयर लिंक में से File ID निकालता है"""
-    if not isinstance(url, str):
-        return None
-    patterns = [
-        r'id=([a-zA-Z0-9_-]+)',
-        r'/d/([a-zA-Z0-9_-]+)',
-        r'file/d/([a-zA-Z0-9_-]+)'
-    ]
-    for p in patterns:
-        m = re.search(p, url)
-        if m:
-            return m.group(1)
-    return None
-
-def download_drive_image(url_or_id):
-    """Drive URL से इमेज फ़ेच करके Base64 में बदलता है"""
-    file_id = extract_drive_id(url_or_id) if "http" in str(url_or_id) else str(url_or_id).strip()
-    if not file_id or file_id == "—":
-        return None
+@st.cache_data(show_spinner=False)
+def load_image_base64_from_drive(drive_url):
+    """Google Form file upload link ko gdown ke jariye Base64 me convert karta hai."""
     try:
-        download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-        resp = requests.get(download_url, timeout=10)
-        if resp.status_code == 200 and len(resp.content) > 100:
-            b64 = base64.b64encode(resp.content).decode('utf-8')
-            content_type = resp.headers.get("Content-Type", "image/jpeg")
-            return f"data:{content_type};base64,{b64}"
+        file_id = None
+        id_match = re.search(r'id=([a-zA-Z0-9_-]+)', str(drive_url))
+        if id_match:
+            file_id = id_match.group(1)
+        else:
+            d_match = re.search(r'/d/([a-zA-Z0-9_-]+)', str(drive_url))
+            if d_match:
+                file_id = d_match.group(1)
+
+        if not file_id:
+            return ""
+
+        download_url = f"https://drive.google.com/uc?id={file_id}"
+        img_bytes = io.BytesIO()
+        gdown.download(download_url, img_bytes, quiet=True)
+        img_bytes.seek(0)
+        
+        # PIL se verify aur base64 convert
+        pil_img = Image.open(img_bytes)
+        output_buffer = io.BytesIO()
+        img_format = pil_img.format if pil_img.format else "JPEG"
+        pil_img.save(output_buffer, format=img_format)
+        b64 = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
+        mime = f"image/{img_format.lower()}"
+        return f"data:{mime};base64,{b64}"
     except Exception:
-        pass
-    return None
+        return ""
 
 def get_image_base64(roll_no, drive_photo_url=None):
-    # 1. यदि Google Form से Drive Photo URL आया है, तो पहले उसे प्राथमिकता दें
-    if drive_photo_url and drive_photo_url != "—":
-        drive_img = download_drive_image(drive_photo_url)
-        if drive_img:
-            return drive_img
+    # 1. Google Form से मिला Google Drive लिंक
+    if drive_photo_url and str(drive_photo_url).strip() not in ["", "—", "nan"]:
+        b64_from_drive = load_image_base64_from_drive(drive_photo_url)
+        if b64_from_drive:
+            return b64_from_drive
 
-    # 2. लोकल डायरेक्टरी से फ़ोटो खोजें
+    # 2. लोकल डायरेक्टरी से फ़ोटो लोड करें
     r_str = str(roll_no).strip()
     for ext in ['.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG']:
         candidate = os.path.join(PHOTOS_DIR, f"{r_str}{ext}")
@@ -114,8 +116,8 @@ def generate_full_portfolio_html(row_dict):
     pen_no      = clean_val(row_dict.get('PENNo'))
     address     = clean_val(row_dict.get('PresentAddress'))
 
-    # Google Form से सिंक हुए फील्ड्स (फॉर्म डेटा से ओवरराइट)
-    short_goal  = clean_val(row_dict.get('ShortGoal'), "शैक्षणिक विषयों में दक्षता प्राप्त करना एवं उत्कृष्ट प्रदर्शन।")
+    # Google Form से सिंक हुए फील्ड्स
+    short_goal  = clean_val(row_dict.get('ShortGoal'), "शैक्षणिक विषयों में दक्षता प्राप्त करना एवं बोर्ड परीक्षा में शीर्ष स्थान पाना।")
     long_goal   = clean_val(row_dict.get('LongGoal'), "उच्च शिक्षा एवं प्रतिष्ठित करियर निर्माण।")
     reflection  = clean_val(row_dict.get('Reflection'), "नियमित अभ्यास, अनुशासन एवं समय प्रबंधन पर विशेष ध्यान।")
     drive_photo = row_dict.get('PhotoDriveLink', None)
@@ -242,7 +244,7 @@ def generate_full_portfolio_html(row_dict):
                     <td style="padding: 5px; border: 1px solid #CBD5E1;">{f_name}</td>
                     <td style="padding: 5px; font-weight: bold; border: 1px solid #CBD5E1;">माता का नाम:</td>
                     <td style="padding: 5px; border: 1px solid #CBD5E1;">{m_name}</td>
-                </tr>
+</tr>
                 <tr>
                     <td style="padding: 5px; font-weight: bold; border: 1px solid #CBD5E1;">लिंग / धर्म:</td>
                     <td style="padding: 5px; border: 1px solid #CBD5E1;">{gender} / {religion}</td>
@@ -384,34 +386,33 @@ def generate_full_portfolio_html(row_dict):
 
 # ----------------- Streamlit UI Application -----------------
 st.title("🎓 Complete School Portfolio Generator & Form Sync")
-st.caption("Aditya Birla Intermediate College | Master Profile Retained, Form Responses Synced")
+st.caption("Aditya Birla Intermediate College | Form Auto-Sync with gdown Image Fetcher")
 
-# Sidebar: Data Storage & Google Form Integration
+# Sidebar: Permanent Data Storage Management
 st.sidebar.header("📁 डेटा एवं फॉर्म सिंक")
 
 is_master_saved = os.path.exists(SAVED_EXCEL_PATH)
 
-# 1. Master Excel Section
 if is_master_saved:
-    st.sidebar.success("🔒 मास्टर प्रोफाइल सुरक्षित है (Permanent)!")
-    with st.sidebar.expander("🗑️ मास्टर शीट रीसेट करें"):
-        if st.button("⚠️ मास्टर डेटा डिलीट करें"):
+    st.sidebar.success("🔒 मास्टर प्रोफ़ाइल स्थायी रूप से सुरक्षित है!")
+    with st.sidebar.expander("🗑️ मास्टर शीट डिलीट विकल्प"):
+        if st.button("⚠️ सुरक्षित डेटा डिलीट करें"):
             os.remove(SAVED_EXCEL_PATH)
             if os.path.exists(SAVED_FORM_DATA_PATH):
                 os.remove(SAVED_FORM_DATA_PATH)
             st.cache_data.clear()
             st.rerun()
 else:
-    st.sidebar.info("📌 मास्टर प्रोफाइल शीट (.xlsx) अपलोड करें:")
-    master_file = st.sidebar.file_uploader("मास्टर शीट (.xlsx)", type=["xlsx"])
+    st.sidebar.info("📌 केवल एक बार मास्टर एक्सेल फ़ाइल अपलोड करें:")
+    master_file = st.sidebar.file_uploader("मास्टर शीट (.xlsx) चुनें", type=["xlsx"])
     if master_file:
         with open(SAVED_EXCEL_PATH, "wb") as f:
             f.write(master_file.getbuffer())
         st.cache_data.clear()
-        st.sidebar.success("✅ मास्टर शीट सुरक्षित हो गई!")
+        st.sidebar.success("✅ डेटा डिस्क पर स्थायी सेव हो गया!")
         st.rerun()
 
-# 2. Google Form / Live Sheet Sync Section
+# 2. Google Form / Live Sheet Sync
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔗 गूगल फॉर्म रिस्पॉन्स सिंक")
 form_sheet_url = st.sidebar.text_input(
@@ -419,7 +420,7 @@ form_sheet_url = st.sidebar.text_input(
     placeholder="https://docs.google.com/spreadsheets/d/.../edit?usp=sharing"
 )
 
-form_csv_upload = st.sidebar.file_uploader("या फॉर्म रिस्पॉन्स CSV/Excel अपलोड करें:", type=["csv", "xlsx"])
+form_file_upload = st.sidebar.file_uploader("या फॉर्म रिस्पॉन्स CSV/Excel अपलोड करें:", type=["csv", "xlsx"])
 
 if st.sidebar.button("🔄 गूगल फॉर्म डेटा सिंक करें"):
     synced_df = None
@@ -434,12 +435,12 @@ if st.sidebar.button("🔄 गूगल फॉर्म डेटा सिं�
                 st.sidebar.error("अमान्य Google Sheet URL!")
         except Exception as e:
             st.sidebar.error(f"शीट फ़ेच करने में त्रुटि: {e}")
-    elif form_csv_upload:
+    elif form_file_upload:
         try:
-            if form_csv_upload.name.endswith('.csv'):
-                synced_df = pd.read_csv(form_csv_upload)
+            if form_file_upload.name.endswith('.csv'):
+                synced_df = pd.read_csv(form_file_upload)
             else:
-                synced_df = pd.read_excel(form_csv_upload)
+                synced_df = pd.read_excel(form_file_upload)
         except Exception as e:
             st.sidebar.error(f"फ़ाइल पढ़ने में त्रुटि: {e}")
 
@@ -451,40 +452,39 @@ if st.sidebar.button("🔄 गूगल फॉर्म डेटा सिं�
 
 if os.path.exists(SAVED_FORM_DATA_PATH):
     st.sidebar.info("⚡ फॉर्म रिस्पॉन्स डेटा वर्तमान में सक्रिय है।")
-    if st.sidebar.button("सिंक हटाया जाए"):
+    if st.sidebar.button("सिंक रीसेट करें"):
         os.remove(SAVED_FORM_DATA_PATH)
         st.cache_data.clear()
         st.rerun()
 
 if not is_master_saved:
-    st.info("👈 कृपया बाएँ साइडबार से विद्यालय की 'All School Data' मास्टर शीट अपलोड करें।")
+    st.info("👈 कृपया बाएँ साइडबार से 'All School Data' वाली मास्टर एक्सेल फ़ाइल अपलोड करें।")
     st.stop()
 
-# ----------------- Data Merging Logic -----------------
+# ----------------- Data Loading and Auto Merge Logic -----------------
 @st.cache_data
-def load_all_data():
+def load_and_merge_data():
     master = pd.read_excel(SAVED_EXCEL_PATH, header=0)
     master.columns = [c.strip() if isinstance(c, str) else c for c in master.columns]
 
     master['RollNo_Clean'] = master['RollNo'].apply(lambda x: clean_val(x, "")) if 'RollNo' in master.columns else master.iloc[:, 0].apply(lambda x: clean_val(x, ""))
     master['Class_Clean'] = master['Class'].apply(lambda x: clean_val(x, "General")) if 'Class' in master.columns else "General"
 
-    # यदि फॉर्म डेटा सिंक हुआ है, तो उसे मास्टर डेटा के साथ मर्ज करें
+    # यदि फॉर्म डेटा सिंक है तो प्रोफ़ाइल छोड़ कर बाकी डेटा ओवरराइट करें
     if os.path.exists(SAVED_FORM_DATA_PATH):
         try:
             f_df = pd.read_csv(SAVED_FORM_DATA_PATH)
             f_df.columns = [c.strip() if isinstance(c, str) else c for c in f_df.columns]
-            
-            # फॉर्म के सामान्य कॉलम नामों की पहचान
-            roll_col = next((c for c in f_df.columns if 'roll' in c.lower()), None)
+
+            # फॉर्म के कॉलम की पहचान
+            roll_col = next((c for c in f_df.columns if 'roll' in c.lower() or 'अनुक्रमांक' in c.lower()), None)
+            photo_col = next((c for c in f_df.columns if 'photo' in c.lower() or 'image' in c.lower() or 'फोटो' in c.lower() or 'चित्र' in c.lower()), None)
             short_col = next((c for c in f_df.columns if 'short' in c.lower() or 'अल्पकालिक' in c.lower()), None)
             long_col = next((c for c in f_df.columns if 'long' in c.lower() or 'दीर्घकालिक' in c.lower() or 'career' in c.lower()), None)
             refl_col = next((c for c in f_df.columns if 'reflection' in c.lower() or 'चिंतन' in c.lower() or 'सुधार' in c.lower()), None)
-            photo_col = next((c for c in f_df.columns if 'photo' in c.lower() or 'image' in c.lower() or 'फ़ोटो' in c.lower()), None)
 
             if roll_col:
                 f_df['Roll_Key'] = f_df[roll_col].apply(lambda x: clean_val(x, ""))
-                # लेटेस्ट रिस्पॉन्स को प्राथमिकता (drop duplicates from bottom)
                 f_df = f_df.drop_duplicates(subset=['Roll_Key'], keep='last').set_index('Roll_Key')
 
                 for idx, row in master.iterrows():
@@ -504,7 +504,7 @@ def load_all_data():
 
     return master
 
-df_master = load_all_data()
+df_master = load_and_merge_data()
 
 # ----------------- TABS -----------------
 tab1, tab2, tab3 = st.tabs(["👤 क्लास व रोल नंबर से खोजें", "📦 क्लास-वार बल्क डाउनलोड (ZIP)", "📷 लोकल फ़ोटो अपलोड"])
@@ -512,16 +512,16 @@ tab1, tab2, tab3 = st.tabs(["👤 क्लास व रोल नंबर स
 # ----------------- TAB 1: Single Portfolio with Dual Filter -----------------
 with tab1:
     st.subheader("व्यक्तिगत छात्र पोर्टफोलियो खोज (Class & Roll No Filter)")
-    
+
     available_classes = sorted(list(df_master['Class_Clean'].unique()))
-    c1, c2 = st.columns([1, 2])
-    
-    with c1:
+    col_filter1, col_filter2 = st.columns([1, 2])
+
+    with col_filter1:
         chosen_class = st.selectbox("1️⃣ कक्षा चुनें (Class):", available_classes)
-    
+
     df_class = df_master[df_master['Class_Clean'] == chosen_class].copy()
-    
-    with c2:
+
+    with col_filter2:
         student_display_map = {}
         for idx, row in df_class.iterrows():
             r_val = row['RollNo_Clean']
@@ -537,11 +537,11 @@ with tab1:
     if selected_student_key:
         s_idx = student_display_map[selected_student_key]
         student_dict = df_class.loc[s_idx].to_dict()
-        
+
         roll_no = clean_val(student_dict.get('RollNo'))
         student_name = clean_val(student_dict.get('Name'))
         cls_val = clean_val(student_dict.get('Class'))
-        
+
         st.markdown("---")
         info_col, photo_col = st.columns([3, 1])
         with info_col:
@@ -573,7 +573,7 @@ with tab1:
 # ----------------- TAB 2: Class-Wise Bulk ZIP -----------------
 with tab2:
     st.subheader("कक्षा-वार / पूरे विद्यालय का बल्क ZIP डाउनलोड")
-    
+
     zip_class_options = ["संपूर्ण विद्यालय (All Classes)"] + available_classes
     zip_selection = st.selectbox("किस कक्षा के सभी पोर्टफोलियो जनरेट करने हैं?", zip_class_options)
 
@@ -597,12 +597,12 @@ with tab2:
                 s_nm = clean_val(s_dict.get('Name'))
                 c_nm = clean_val(s_dict.get('Class'))
                 s_html = generate_full_portfolio_html(s_dict)
-                
+
                 entry_name = f"{c_nm}/Portfolio_Roll_{r_no}_{s_nm}.html"
                 zip_file.writestr(entry_name, s_html)
                 progress_bar.progress((i + 1) / len(target_df))
 
-        st.success("✅ सभी चयनित पोर्टफोलियो तैयार हैं!")
+        st.success("✅ सभी चयनित पोर्टफोलियो तैयार हो चुके हैं!")
         st.download_button(
             label=f"⬇️ डाउनलोड ZIP फ़ाइल ({zip_file_name})",
             data=zip_buffer.getvalue(),
