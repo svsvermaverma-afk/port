@@ -4,6 +4,8 @@ import os
 import zipfile
 import base64
 import io
+import re
+import requests
 
 # ----------------- Directories Setup -----------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -15,10 +17,10 @@ OUTPUT_DIR = os.path.join(DATA_DIR, "output_html")
 for d in [EXCEL_DIR, PHOTOS_DIR, OUTPUT_DIR]:
     os.makedirs(d, exist_ok=True)
 
-# स्थायी स्टोरेज पथ (Permanent Storage)
 SAVED_EXCEL_PATH = os.path.join(EXCEL_DIR, "all_school_master_data.xlsx")
+SAVED_FORM_DATA_PATH = os.path.join(EXCEL_DIR, "form_sync_data.csv")
 
-st.set_page_config(page_title="School Portfolio Generator", layout="wide")
+st.set_page_config(page_title="School Portfolio Generator & Form Sync", layout="wide")
 
 # ----------------- Helper Functions -----------------
 def clean_val(val, default="—"):
@@ -29,15 +31,56 @@ def clean_val(val, default="—"):
         val_str = val_str[:-2]
     return val_str if val_str != "" else default
 
-def get_image_base64(roll_no):
+def extract_drive_id(url):
+    """Google Drive शेयर लिंक में से File ID निकालता है"""
+    if not isinstance(url, str):
+        return None
+    patterns = [
+        r'id=([a-zA-Z0-9_-]+)',
+        r'/d/([a-zA-Z0-9_-]+)',
+        r'file/d/([a-zA-Z0-9_-]+)'
+    ]
+    for p in patterns:
+        m = re.search(p, url)
+        if m:
+            return m.group(1)
+    return None
+
+def download_drive_image(url_or_id):
+    """Drive URL से इमेज फ़ेच करके Base64 में बदलता है"""
+    file_id = extract_drive_id(url_or_id) if "http" in str(url_or_id) else str(url_or_id).strip()
+    if not file_id or file_id == "—":
+        return None
+    try:
+        download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+        resp = requests.get(download_url, timeout=10)
+        if resp.status_code == 200 and len(resp.content) > 100:
+            b64 = base64.b64encode(resp.content).decode('utf-8')
+            content_type = resp.headers.get("Content-Type", "image/jpeg")
+            return f"data:{content_type};base64,{b64}"
+    except Exception:
+        pass
+    return None
+
+def get_image_base64(roll_no, drive_photo_url=None):
+    # 1. यदि Google Form से Drive Photo URL आया है, तो पहले उसे प्राथमिकता दें
+    if drive_photo_url and drive_photo_url != "—":
+        drive_img = download_drive_image(drive_photo_url)
+        if drive_img:
+            return drive_img
+
+    # 2. लोकल डायरेक्टरी से फ़ोटो खोजें
     r_str = str(roll_no).strip()
     for ext in ['.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG']:
         candidate = os.path.join(PHOTOS_DIR, f"{r_str}{ext}")
         if os.path.exists(candidate):
-            with open(candidate, "rb") as img_file:
-                b64 = base64.b64encode(img_file.read()).decode('utf-8')
-                mime = "image/png" if ext.lower() == '.png' else "image/jpeg"
-                return f"data:{mime};base64,{b64}"
+            try:
+                with open(candidate, "rb") as img_file:
+                    b64 = base64.b64encode(img_file.read()).decode('utf-8')
+                    mime = "image/png" if ext.lower() == '.png' else "image/jpeg"
+                    return f"data:{mime};base64,{b64}"
+            except Exception:
+                pass
     return ""
 
 def remove_existing_photos(roll_no):
@@ -71,11 +114,13 @@ def generate_full_portfolio_html(row_dict):
     pen_no      = clean_val(row_dict.get('PENNo'))
     address     = clean_val(row_dict.get('PresentAddress'))
 
+    # Google Form से सिंक हुए फील्ड्स (फॉर्म डेटा से ओवरराइट)
     short_goal  = clean_val(row_dict.get('ShortGoal'), "शैक्षणिक विषयों में दक्षता प्राप्त करना एवं उत्कृष्ट प्रदर्शन।")
     long_goal   = clean_val(row_dict.get('LongGoal'), "उच्च शिक्षा एवं प्रतिष्ठित करियर निर्माण।")
     reflection  = clean_val(row_dict.get('Reflection'), "नियमित अभ्यास, अनुशासन एवं समय प्रबंधन पर विशेष ध्यान।")
+    drive_photo = row_dict.get('PhotoDriveLink', None)
 
-    img_b64 = get_image_base64(roll_no)
+    img_b64 = get_image_base64(roll_no, drive_photo)
     img_tag = f'<img src="{img_b64}" style="width: 105px; height: 130px; object-fit: cover; border-radius: 6px; border: 2px solid #1E3A8A;"/>' if img_b64 else '<div style="width: 105px; height: 130px; border-radius: 6px; border: 2px dashed #94A3B8; display:flex; align-items:center; justify-content:center; color:#64748B; font-size:11px; text-align:center; padding:5px;">फ़ोटो उपलब्ध नहीं</div>'
 
     att_months = ["अप्रैल", "मई", "जुलाई", "अगस्त", "सितंबर", "अक्टूबर", "नवंबर", "दिसंबर", "जनवरी", "कुल उपस्थिति", "प्रतिशत (%)"]
@@ -83,43 +128,45 @@ def generate_full_portfolio_html(row_dict):
     att_values_html = "".join([f'<td style="padding: 6px; border: 1px solid #CBD5E1; text-align: center; font-weight: 600;">{clean_val(row_dict.get(m, "—"))}</td>' for m in att_months])
 
     act_part1 = [
-        ("27.08.2026", "1. Tata Building India School Essay Competition", "साहित्यिक (निबंध)"),
-        ("27.08.2026", "2. रंगोली प्रतियोगिता (Rangoli Making)", "कला एवं संस्कृति"),
-        ("27.08.2026", "3. मेहंदी प्रतियोगिता (Mehndi Design)", "कला एवं संस्कृति"),
-        ("20.08.2026", "4. राखी निर्माण प्रतियोगिता (Rakhi Making)", "क्राफ्ट एवं रचनात्मकता"),
-        ("13.08.2026", "5. चित्रकला प्रतियोगिता (Drawing)", "दृश्य कला (Fine Arts)"),
-        ("06.08.2026", "6. निबंध प्रतियोगिता (Essay Writing)", "साहित्यिक कौशल"),
-        ("30.07.2026", "7. बाल संसद गतिविधियां (Bal Sansad)", "नेतृत्व एवं सामाजिक कौशल"),
+        ("27.08.2026", "1. Tata Building India School Essay Competition", "साहित्यिक (निबंध)", "Act1_Remark"),
+        ("27.08.2026", "2. रंगोली प्रतियोगिता (Rangoli Making)", "कला एवं संस्कृति", "Act2_Remark"),
+        ("27.08.2026", "3. मेहंदी प्रतियोगिता (Mehndi Design)", "कला एवं संस्कृति", "Act3_Remark"),
+        ("20.08.2026", "4. राखी निर्माण प्रतियोगिता (Rakhi Making)", "क्राफ्ट एवं रचनात्मकता", "Act4_Remark"),
+        ("13.08.2026", "5. चित्रकला प्रतियोगिता (Drawing)", "दृश्य कला (Fine Arts)", "Act5_Remark"),
+        ("06.08.2026", "6. निबंध प्रतियोगिता (Essay Writing)", "साहित्यिक कौशल", "Act6_Remark"),
+        ("30.07.2026", "7. बाल संसद गतिविधियां (Bal Sansad)", "नेतृत्व एवं सामाजिक कौशल", "Act7_Remark"),
     ]
     act_part1_rows = ""
-    for dt, title, cat_item in act_part1:
+    for dt, title, cat_item, key_rem in act_part1:
+        rem_text = clean_val(row_dict.get(key_rem), "सक्रिय प्रतिभाग एवं सराहनीय प्रदर्शन")
         act_part1_rows += f"""
             <tr style="border-bottom: 1px solid #E2E8F0;">
                 <td style="padding: 6px; text-align: center; border: 1px solid #CBD5E1;">{dt}</td>
-                <td style="padding: 6px; font-weight: 600; color: #1E3A8A; border: 1px solid #CBD5E1;">{title}<br><span style="font-weight: normal; color: #475569; font-size: 11px;">सक्रिय प्रतिभाग</span></td>
+                <td style="padding: 6px; font-weight: 600; color: #1E3A8A; border: 1px solid #CBD5E1;">{title}<br><span style="font-weight: normal; color: #475569; font-size: 11px;">सक्रिय सहभागिता</span></td>
                 <td style="padding: 6px; text-align: center; border: 1px solid #CBD5E1;">{cat_item}</td>
-                <td style="padding: 6px; color: #0284C7; font-style: italic; border: 1px solid #CBD5E1;">सराहनीय प्रदर्शन</td>
+                <td style="padding: 6px; color: #0284C7; font-style: italic; border: 1px solid #CBD5E1;">{rem_text}</td>
                 <td style="padding: 6px; text-align: center; font-weight: bold; color: #059669; border: 1px solid #CBD5E1;">5/5</td>
             </tr>
         """
 
     act_part2 = [
-        ("24.07.2026", "8. कक्षा सज्जा एवं चार्ट (Class Decoration)", "रचनात्मक एवं नवाचार"),
-        ("16.07.2026", "9. भाषण प्रतियोगिता (Speech/Elocution)", "वाक कौशल व आत्मविश्वास"),
-        ("09.07.2026", "10. कहानी लेखन (Story Writing)", "साहित्यिक सृजन"),
-        ("02.07.2026", "11. आई.ई.पी. पोर्टफोलियो (IEP Portfolio)", "शैक्षणिक पोर्टफोलियो कार्य"),
-        ("25.04.2026", "12. समूह चर्चा (Group Discussion)", "संवाद एवं संप्रेषण कौशल"),
-        ("18.04.2026", "13. लेख प्रतियोगिता (Article Writing)", "वैचारिक एवं सामाजिक लेखन"),
-        ("10.04.2026", "14. मौलिक रचना (Creative Story/Writing)", "मौलिक रचनात्मकता"),
+        ("24.07.2026", "8. कक्षा सज्जा एवं चार्ट (Class Decoration)", "रचनात्मक एवं नवाचार", "Act8_Remark"),
+        ("16.07.2026", "9. भाषण प्रतियोगिता (Speech/Elocution)", "वाक कौशल व आत्मविश्वास", "Act9_Remark"),
+        ("09.07.2026", "10. कहानी लेखन (Story Writing)", "साहित्यिक सृजन", "Act10_Remark"),
+        ("02.07.2026", "11. आई.ई.पी. पोर्टफोलियो (IEP Portfolio)", "शैक्षणिक पोर्टफोलियो कार्य", "Act11_Remark"),
+        ("25.04.2026", "12. समूह चर्चा (Group Discussion)", "संवाद एवं संप्रेषण कौशल", "Act12_Remark"),
+        ("18.04.2026", "13. लेख प्रतियोगिता (Article Writing)", "वैचारिक एवं सामाजिक लेखन", "Act13_Remark"),
+        ("10.04.2026", "14. मौलिक रचना (Creative Story/Writing)", "मौलिक रचनात्मकता", "Act14_Remark"),
     ]
     act_part2_rows = ""
-    for dt, title, cat_item in act_part2:
+    for dt, title, cat_item, key_rem in act_part2:
+        rem_text = clean_val(row_dict.get(key_rem), "सक्रिय प्रतिभाग एवं सराहनीय प्रदर्शन")
         act_part2_rows += f"""
             <tr style="border-bottom: 1px solid #E2E8F0;">
                 <td style="padding: 6px; text-align: center; border: 1px solid #CBD5E1;">{dt}</td>
-                <td style="padding: 6px; font-weight: 600; color: #1E3A8A; border: 1px solid #CBD5E1;">{title}<br><span style="font-weight: normal; color: #475569; font-size: 11px;">सक्रिय प्रतिभाग</span></td>
+                <td style="padding: 6px; font-weight: 600; color: #1E3A8A; border: 1px solid #CBD5E1;">{title}<br><span style="font-weight: normal; color: #475569; font-size: 11px;">सक्रिय सहभागिता</span></td>
                 <td style="padding: 6px; text-align: center; border: 1px solid #CBD5E1;">{cat_item}</td>
-                <td style="padding: 6px; color: #0284C7; font-style: italic; border: 1px solid #CBD5E1;">सराहनीय प्रदर्शन</td>
+                <td style="padding: 6px; color: #0284C7; font-style: italic; border: 1px solid #CBD5E1;">{rem_text}</td>
                 <td style="padding: 6px; text-align: center; font-weight: bold; color: #059669; border: 1px solid #CBD5E1;">5/5</td>
             </tr>
         """
@@ -336,94 +383,145 @@ def generate_full_portfolio_html(row_dict):
     return html_content
 
 # ----------------- Streamlit UI Application -----------------
-st.title("🎓 Complete School Portfolio Generator")
-st.caption("Aditya Birla Intermediate College | Class & Roll No. Dual Filtering with Permanent Storage")
+st.title("🎓 Complete School Portfolio Generator & Form Sync")
+st.caption("Aditya Birla Intermediate College | Master Profile Retained, Form Responses Synced")
 
-# Sidebar: File & Storage Control
-st.sidebar.header("📁 डेटा स्टोरेज प्रबंधन")
+# Sidebar: Data Storage & Google Form Integration
+st.sidebar.header("📁 डेटा एवं फॉर्म सिंक")
 
-is_file_saved = os.path.exists(SAVED_EXCEL_PATH)
+is_master_saved = os.path.exists(SAVED_EXCEL_PATH)
 
-if is_file_saved:
-    st.sidebar.success("🔒 स्कूल का मास्टर डेटा स्थायी रूप से सुरक्षित है!")
-    st.sidebar.caption("यह डेटा तब तक नहीं हटेगा जब तक आप नीचे दिए गए बटन को नहीं दबाते।")
-    
-    # स्पष्ट कन्फर्मेशन के साथ ही डिलीट होगा
-    with st.sidebar.expander("🗑️ डेटा रीसेट / डिलीट विकल्प"):
-        st.warning("यदि आप नया एक्सेल अपलोड करना चाहते हैं, तभी इसे हटाएं।")
-        if st.button("⚠️ सुरक्षित डेटा डिलीट करें"):
+# 1. Master Excel Section
+if is_master_saved:
+    st.sidebar.success("🔒 मास्टर प्रोफाइल सुरक्षित है (Permanent)!")
+    with st.sidebar.expander("🗑️ मास्टर शीट रीसेट करें"):
+        if st.button("⚠️ मास्टर डेटा डिलीट करें"):
             os.remove(SAVED_EXCEL_PATH)
+            if os.path.exists(SAVED_FORM_DATA_PATH):
+                os.remove(SAVED_FORM_DATA_PATH)
             st.cache_data.clear()
             st.rerun()
 else:
-    st.sidebar.info("📌 केवल एक बार एक्सेल फ़ाइल अपलोड करें:")
-    excel_file = st.sidebar.file_uploader("मास्टर शीट (.xlsx) चुनें", type=["xlsx"])
-    if excel_file:
+    st.sidebar.info("📌 मास्टर प्रोफाइल शीट (.xlsx) अपलोड करें:")
+    master_file = st.sidebar.file_uploader("मास्टर शीट (.xlsx)", type=["xlsx"])
+    if master_file:
         with open(SAVED_EXCEL_PATH, "wb") as f:
-            f.write(excel_file.getbuffer())
+            f.write(master_file.getbuffer())
         st.cache_data.clear()
-        st.sidebar.success("✅ डेटा डिस्क पर स्थायी सेव हो गया!")
+        st.sidebar.success("✅ मास्टर शीट सुरक्षित हो गई!")
         st.rerun()
 
-# फ़ोटो प्रबंधन
-st.sidebar.subheader("📸 फ़ोटो अपलोड")
-multi_photos = st.sidebar.file_uploader(
-    "सभी छात्रों की फ़ोटो चुनें (JPEG/PNG)", 
-    type=["jpg", "jpeg", "png"], 
-    accept_multiple_files=True,
-    help="फ़ोटो का नाम RollNo पर होना चाहिए (उदा: 101.jpg)"
+# 2. Google Form / Live Sheet Sync Section
+st.sidebar.markdown("---")
+st.sidebar.subheader("🔗 गूगल फॉर्म रिस्पॉन्स सिंक")
+form_sheet_url = st.sidebar.text_input(
+    "Google Form की Sheet का शेयर लिंक डालें:",
+    placeholder="https://docs.google.com/spreadsheets/d/.../edit?usp=sharing"
 )
-if multi_photos:
-    count = 0
-    for p in multi_photos:
-        filename = os.path.basename(p.name)
-        save_dest = os.path.join(PHOTOS_DIR, filename)
-        with open(save_dest, "wb") as f:
-            f.write(p.getbuffer())
-        count += 1
-    st.sidebar.success(f"✅ {count} नई फ़ोटो सुरक्षित हुईं!")
 
-if not is_file_saved:
-    st.info("👈 कृपया बाएँ साइडबार से 'All School Data' वाली मास्टर एक्सेल फ़ाइल अपलोड करें।")
+form_csv_upload = st.sidebar.file_uploader("या फॉर्म रिस्पॉन्स CSV/Excel अपलोड करें:", type=["csv", "xlsx"])
+
+if st.sidebar.button("🔄 गूगल फॉर्म डेटा सिंक करें"):
+    synced_df = None
+    if form_sheet_url:
+        try:
+            m = re.search(r'/d/([a-zA-Z0-9_-]+)', form_sheet_url)
+            if m:
+                sheet_id = m.group(1)
+                export_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+                synced_df = pd.read_csv(export_url)
+            else:
+                st.sidebar.error("अमान्य Google Sheet URL!")
+        except Exception as e:
+            st.sidebar.error(f"शीट फ़ेच करने में त्रुटि: {e}")
+    elif form_csv_upload:
+        try:
+            if form_csv_upload.name.endswith('.csv'):
+                synced_df = pd.read_csv(form_csv_upload)
+            else:
+                synced_df = pd.read_excel(form_csv_upload)
+        except Exception as e:
+            st.sidebar.error(f"फ़ाइल पढ़ने में त्रुटि: {e}")
+
+    if synced_df is not None:
+        synced_df.to_csv(SAVED_FORM_DATA_PATH, index=False)
+        st.cache_data.clear()
+        st.sidebar.success(f"✅ फॉर्म डेटा से {len(synced_df)} रिकॉर्ड सिंक हो गए!")
+        st.rerun()
+
+if os.path.exists(SAVED_FORM_DATA_PATH):
+    st.sidebar.info("⚡ फॉर्म रिस्पॉन्स डेटा वर्तमान में सक्रिय है।")
+    if st.sidebar.button("सिंक हटाया जाए"):
+        os.remove(SAVED_FORM_DATA_PATH)
+        st.cache_data.clear()
+        st.rerun()
+
+if not is_master_saved:
+    st.info("👈 कृपया बाएँ साइडबार से विद्यालय की 'All School Data' मास्टर शीट अपलोड करें।")
     st.stop()
 
+# ----------------- Data Merging Logic -----------------
 @st.cache_data
-def load_data(path):
-    return pd.read_excel(path, header=0)
+def load_all_data():
+    master = pd.read_excel(SAVED_EXCEL_PATH, header=0)
+    master.columns = [c.strip() if isinstance(c, str) else c for c in master.columns]
 
-df_master = load_data(SAVED_EXCEL_PATH)
-df_master.columns = [c.strip() if isinstance(c, str) else c for c in df_master.columns]
+    master['RollNo_Clean'] = master['RollNo'].apply(lambda x: clean_val(x, "")) if 'RollNo' in master.columns else master.iloc[:, 0].apply(lambda x: clean_val(x, ""))
+    master['Class_Clean'] = master['Class'].apply(lambda x: clean_val(x, "General")) if 'Class' in master.columns else "General"
 
-# सुनिश्चित करें कि RollNo और Class स्ट्रिंग के रूप में हों
-if 'RollNo' in df_master.columns:
-    df_master['RollNo_Clean'] = df_master['RollNo'].apply(lambda x: clean_val(x, ""))
-else:
-    df_master['RollNo_Clean'] = df_master.iloc[:, 0].apply(lambda x: clean_val(x, ""))
+    # यदि फॉर्म डेटा सिंक हुआ है, तो उसे मास्टर डेटा के साथ मर्ज करें
+    if os.path.exists(SAVED_FORM_DATA_PATH):
+        try:
+            f_df = pd.read_csv(SAVED_FORM_DATA_PATH)
+            f_df.columns = [c.strip() if isinstance(c, str) else c for c in f_df.columns]
+            
+            # फॉर्म के सामान्य कॉलम नामों की पहचान
+            roll_col = next((c for c in f_df.columns if 'roll' in c.lower()), None)
+            short_col = next((c for c in f_df.columns if 'short' in c.lower() or 'अल्पकालिक' in c.lower()), None)
+            long_col = next((c for c in f_df.columns if 'long' in c.lower() or 'दीर्घकालिक' in c.lower() or 'career' in c.lower()), None)
+            refl_col = next((c for c in f_df.columns if 'reflection' in c.lower() or 'चिंतन' in c.lower() or 'सुधार' in c.lower()), None)
+            photo_col = next((c for c in f_df.columns if 'photo' in c.lower() or 'image' in c.lower() or 'फ़ोटो' in c.lower()), None)
 
-if 'Class' in df_master.columns:
-    df_master['Class_Clean'] = df_master['Class'].apply(lambda x: clean_val(x, "—"))
-else:
-    df_master['Class_Clean'] = "General"
+            if roll_col:
+                f_df['Roll_Key'] = f_df[roll_col].apply(lambda x: clean_val(x, ""))
+                # लेटेस्ट रिस्पॉन्स को प्राथमिकता (drop duplicates from bottom)
+                f_df = f_df.drop_duplicates(subset=['Roll_Key'], keep='last').set_index('Roll_Key')
+
+                for idx, row in master.iterrows():
+                    r_val = row['RollNo_Clean']
+                    if r_val in f_df.index:
+                        f_row = f_df.loc[r_val]
+                        if short_col and pd.notna(f_row.get(short_col)):
+                            master.at[idx, 'ShortGoal'] = str(f_row.get(short_col)).strip()
+                        if long_col and pd.notna(f_row.get(long_col)):
+                            master.at[idx, 'LongGoal'] = str(f_row.get(long_col)).strip()
+                        if refl_col and pd.notna(f_row.get(refl_col)):
+                            master.at[idx, 'Reflection'] = str(f_row.get(refl_col)).strip()
+                        if photo_col and pd.notna(f_row.get(photo_col)):
+                            master.at[idx, 'PhotoDriveLink'] = str(f_row.get(photo_col)).strip()
+        except Exception:
+            pass
+
+    return master
+
+df_master = load_all_data()
 
 # ----------------- TABS -----------------
-tab1, tab2, tab3 = st.tabs(["👤 क्लास व रोल नंबर से खोजें (Single Portfolio)", "📦 कक्षा-वार बल्क डाउनलोड (ZIP)", "📷 एक फ़ोटो जोड़ें"])
+tab1, tab2, tab3 = st.tabs(["👤 क्लास व रोल नंबर से खोजें", "📦 क्लास-वार बल्क डाउनलोड (ZIP)", "📷 लोकल फ़ोटो अपलोड"])
 
 # ----------------- TAB 1: Single Portfolio with Dual Filter -----------------
 with tab1:
     st.subheader("व्यक्तिगत छात्र पोर्टफोलियो खोज (Class & Roll No Filter)")
     
-    # 1. Class Filter
     available_classes = sorted(list(df_master['Class_Clean'].unique()))
-    col_filter1, col_filter2 = st.columns([1, 2])
+    c1, c2 = st.columns([1, 2])
     
-    with col_filter1:
-        chosen_class = st.selectbox("1️⃣ कक्षा चुनें (Select Class):", available_classes)
+    with c1:
+        chosen_class = st.selectbox("1️⃣ कक्षा चुनें (Class):", available_classes)
     
-    # चयनित क्लास के छात्र फ़िल्टर करें
     df_class = df_master[df_master['Class_Clean'] == chosen_class].copy()
     
-    with col_filter2:
-        # 2. Roll No Dropdown / Search
+    with c2:
         student_display_map = {}
         for idx, row in df_class.iterrows():
             r_val = row['RollNo_Clean']
@@ -445,18 +543,19 @@ with tab1:
         cls_val = clean_val(student_dict.get('Class'))
         
         st.markdown("---")
-        c1, c2 = st.columns([3, 1])
-        with c1:
+        info_col, photo_col = st.columns([3, 1])
+        with info_col:
             st.write(f"### {student_name} (Roll No: {roll_no})")
             st.write(f"**कक्षा:** {cls_val} | **Adm No:** {clean_val(student_dict.get('AdmNo'))} | **House:** {clean_val(student_dict.get('House'))}")
             st.write(f"**पिता का नाम:** {clean_val(student_dict.get('FatherName'))} | **माता का नाम:** {clean_val(student_dict.get('MotherName'))}")
-            st.write(f"**मोबाइल:** {clean_val(student_dict.get('CommunicationNo'))} | **PEN No:** {clean_val(student_dict.get('PENNo'))}")
-        with c2:
-            b64_img = get_image_base64(roll_no)
+            st.write(f"**अल्पकालिक लक्ष्य (Goal):** {clean_val(student_dict.get('ShortGoal'))}")
+            st.write(f"**दीर्घकालिक लक्ष्य (Career):** {clean_val(student_dict.get('LongGoal'))}")
+        with photo_col:
+            b64_img = get_image_base64(roll_no, student_dict.get('PhotoDriveLink'))
             if b64_img:
-                st.markdown(f'<img src="{b64_img}" width="105" style="border-radius:6px; border:2px solid #1E3A8A;"/>', unsafe_allow_html=True)
+                st.markdown(f'<img src="{b64_img}" width="110" style="border-radius:6px; border:2px solid #1E3A8A;"/>', unsafe_allow_html=True)
             else:
-                st.info("फ़ोटो संलग्न नहीं है")
+                st.info("फ़ोटो उपलब्ध नहीं")
 
         html_code = generate_full_portfolio_html(student_dict)
         file_name = f"Portfolio_{cls_val}_Roll_{roll_no}_{student_name}.html"
@@ -468,7 +567,7 @@ with tab1:
             mime="text/html"
         )
 
-        with st.expander("👁️ पोर्टफोलियो का लाइव प्रीव्यू देखें"):
+        with st.expander("👁️ 3-पेज पोर्टफोलियो का लाइव प्रीव्यू देखें"):
             st.components.v1.html(html_code, height=900, scrolling=True)
 
 # ----------------- TAB 2: Class-Wise Bulk ZIP -----------------
@@ -499,12 +598,11 @@ with tab2:
                 c_nm = clean_val(s_dict.get('Class'))
                 s_html = generate_full_portfolio_html(s_dict)
                 
-                # क्लास अनुसार फ़ोल्डर के अंदर सुरक्षित
                 entry_name = f"{c_nm}/Portfolio_Roll_{r_no}_{s_nm}.html"
                 zip_file.writestr(entry_name, s_html)
                 progress_bar.progress((i + 1) / len(target_df))
 
-        st.success("✅ सभी चयनित पोर्टफोलियो तैयार हो चुके हैं!")
+        st.success("✅ सभी चयनित पोर्टफोलियो तैयार हैं!")
         st.download_button(
             label=f"⬇️ डाउनलोड ZIP फ़ाइल ({zip_file_name})",
             data=zip_buffer.getvalue(),
@@ -514,7 +612,7 @@ with tab2:
 
 # ----------------- TAB 3: Single Photo Update -----------------
 with tab3:
-    st.subheader("किसी छात्र की फ़ोटो अपलोड / अपडेट करें")
+    st.subheader("लोकल फ़ोटो अपलोड / अपडेट करें")
     s_roll = st.text_input("छात्र का रोल नंबर (RollNo) दर्ज करें:")
     s_file = st.file_uploader("फ़ोटो फ़ाइल चुनें (JPEG/PNG):", type=["jpg", "jpeg", "png"], key="tab3_p")
 
@@ -525,5 +623,5 @@ with tab3:
             save_path = os.path.join(PHOTOS_DIR, f"{s_roll.strip()}{ext}")
             with open(save_path, "wb") as f:
                 f.write(s_file.getbuffer())
-            st.success(f"✅ रोल नंबर {s_roll} के लिए फ़ोटो सफलतापूर्वक अपडेट हो गई!")
+            st.success(f"✅ रोल नंबर {s_roll} के लिए फ़ोटो सुरक्षित हो गई!")
             st.rerun()
