@@ -5,7 +5,7 @@ import zipfile
 import base64
 import io
 import re
-import gdown
+import requests
 from PIL import Image
 
 # ----------------- Directories Setup -----------------
@@ -34,7 +34,7 @@ def clean_val(val, default="—"):
 
 @st.cache_data(show_spinner=False)
 def load_image_base64_from_drive(drive_url):
-    """Google Form file upload link ko gdown ke jariye Base64 me convert karta hai."""
+    """Google Form file upload link ko bina gdown ke Base64 me convert karta hai."""
     try:
         file_id = None
         id_match = re.search(r'id=([a-zA-Z0-9_-]+)', str(drive_url))
@@ -48,30 +48,33 @@ def load_image_base64_from_drive(drive_url):
         if not file_id:
             return ""
 
-        download_url = f"https://drive.google.com/uc?id={file_id}"
-        img_bytes = io.BytesIO()
-        gdown.download(download_url, img_bytes, quiet=True)
-        img_bytes.seek(0)
-        
-        # PIL se verify aur base64 convert
-        pil_img = Image.open(img_bytes)
-        output_buffer = io.BytesIO()
-        img_format = pil_img.format if pil_img.format else "JPEG"
-        pil_img.save(output_buffer, format=img_format)
-        b64 = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
-        mime = f"image/{img_format.lower()}"
-        return f"data:{mime};base64,{b64}"
+        download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+        session = requests.Session()
+        response = session.get(download_url, timeout=10)
+
+        # Google Drive confirmation token check
+        for key, value in response.cookies.items():
+            if key.startswith('download_warning'):
+                response = session.get(f"{download_url}&confirm={value}", timeout=10)
+                break
+
+        if response.status_code == 200 and len(response.content) > 200:
+            pil_img = Image.open(io.BytesIO(response.content))
+            output_buffer = io.BytesIO()
+            img_format = pil_img.format if pil_img.format else "JPEG"
+            pil_img.save(output_buffer, format=img_format)
+            b64 = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
+            return f"data:image/{img_format.lower()};base64,{b64}"
     except Exception:
-        return ""
+        pass
+    return ""
 
 def get_image_base64(roll_no, drive_photo_url=None):
-    # 1. Google Form से मिला Google Drive लिंक
     if drive_photo_url and str(drive_photo_url).strip() not in ["", "—", "nan"]:
         b64_from_drive = load_image_base64_from_drive(drive_photo_url)
         if b64_from_drive:
             return b64_from_drive
 
-    # 2. लोकल डायरेक्टरी से फ़ोटो लोड करें
     r_str = str(roll_no).strip()
     for ext in ['.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG']:
         candidate = os.path.join(PHOTOS_DIR, f"{r_str}{ext}")
@@ -116,8 +119,7 @@ def generate_full_portfolio_html(row_dict):
     pen_no      = clean_val(row_dict.get('PENNo'))
     address     = clean_val(row_dict.get('PresentAddress'))
 
-    # Google Form से सिंक हुए फील्ड्स
-    short_goal  = clean_val(row_dict.get('ShortGoal'), "शैक्षणिक विषयों में दक्षता प्राप्त करना एवं बोर्ड परीक्षा में शीर्ष स्थान पाना।")
+    short_goal  = clean_val(row_dict.get('ShortGoal'), "शैक्षणिक विषयों में दक्षता प्राप्त करना एवं उत्कृष्ट प्रदर्शन।")
     long_goal   = clean_val(row_dict.get('LongGoal'), "उच्च शिक्षा एवं प्रतिष्ठित करियर निर्माण।")
     reflection  = clean_val(row_dict.get('Reflection'), "नियमित अभ्यास, अनुशासन एवं समय प्रबंधन पर विशेष ध्यान।")
     drive_photo = row_dict.get('PhotoDriveLink', None)
@@ -204,7 +206,7 @@ def generate_full_portfolio_html(row_dict):
 </head>
 <body>
 
-    <!-- ================= PAGE 1 ================= -->
+    <!-- PAGE 1 -->
     <div class="page">
         <div class="header">
             <h2 style="margin: 0; color: #1E3A8A; font-size: 21px; text-transform: uppercase; letter-spacing: 0.5px;">ADITYA BIRLA INTERMEDIATE COLLEGE, RENUKOOT, SONEBHADRA (UP)</h2>
@@ -244,7 +246,7 @@ def generate_full_portfolio_html(row_dict):
                     <td style="padding: 5px; border: 1px solid #CBD5E1;">{f_name}</td>
                     <td style="padding: 5px; font-weight: bold; border: 1px solid #CBD5E1;">माता का नाम:</td>
                     <td style="padding: 5px; border: 1px solid #CBD5E1;">{m_name}</td>
-</tr>
+                </tr>
                 <tr>
                     <td style="padding: 5px; font-weight: bold; border: 1px solid #CBD5E1;">लिंग / धर्म:</td>
                     <td style="padding: 5px; border: 1px solid #CBD5E1;">{gender} / {religion}</td>
@@ -293,7 +295,7 @@ def generate_full_portfolio_html(row_dict):
         </div>
     </div>
 
-    <!-- ================= PAGE 2 ================= -->
+    <!-- PAGE 2 -->
     <div class="page">
         <div class="header">
             <h3 style="margin: 0; color: #1E3A8A; font-size: 18px; text-transform: uppercase;">सह-पाठ्यचर्या, उपस्थिति एवं गतिविधि मूल्यांकन प्रपत्र (भाग - 1)</h3>
@@ -328,7 +330,7 @@ def generate_full_portfolio_html(row_dict):
         </table>
     </div>
 
-    <!-- ================= PAGE 3 ================= -->
+    <!-- PAGE 3 -->
     <div class="page">
         <div class="header">
             <h3 style="margin: 0; color: #1E3A8A; font-size: 18px; text-transform: uppercase;">सह-पाठ्यचर्या, गतिविधि मूल्यांकन एवं सत्यापन (भाग - 2)</h3>
@@ -386,7 +388,7 @@ def generate_full_portfolio_html(row_dict):
 
 # ----------------- Streamlit UI Application -----------------
 st.title("🎓 Complete School Portfolio Generator & Form Sync")
-st.caption("Aditya Birla Intermediate College | Form Auto-Sync with gdown Image Fetcher")
+st.caption("Aditya Birla Intermediate College | Form Auto-Sync with Direct Drive Fetcher")
 
 # Sidebar: Permanent Data Storage Management
 st.sidebar.header("📁 डेटा एवं फॉर्म सिंक")
@@ -412,7 +414,7 @@ else:
         st.sidebar.success("✅ डेटा डिस्क पर स्थायी सेव हो गया!")
         st.rerun()
 
-# 2. Google Form / Live Sheet Sync
+# Google Form Sync
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔗 गूगल फॉर्म रिस्पॉन्स सिंक")
 form_sheet_url = st.sidebar.text_input(
@@ -451,7 +453,7 @@ if st.sidebar.button("🔄 गूगल फॉर्म डेटा सिं�
         st.rerun()
 
 if os.path.exists(SAVED_FORM_DATA_PATH):
-    st.sidebar.info("⚡ फॉर्म रिस्पॉन्स डेटा वर्तमान में सक्रिय है।")
+    st.sidebar.info("⚡ फॉर्म रिस्पॉन्स डेटा सक्रिय है।")
     if st.sidebar.button("सिंक रीसेट करें"):
         os.remove(SAVED_FORM_DATA_PATH)
         st.cache_data.clear()
@@ -470,13 +472,11 @@ def load_and_merge_data():
     master['RollNo_Clean'] = master['RollNo'].apply(lambda x: clean_val(x, "")) if 'RollNo' in master.columns else master.iloc[:, 0].apply(lambda x: clean_val(x, ""))
     master['Class_Clean'] = master['Class'].apply(lambda x: clean_val(x, "General")) if 'Class' in master.columns else "General"
 
-    # यदि फॉर्म डेटा सिंक है तो प्रोफ़ाइल छोड़ कर बाकी डेटा ओवरराइट करें
     if os.path.exists(SAVED_FORM_DATA_PATH):
         try:
             f_df = pd.read_csv(SAVED_FORM_DATA_PATH)
             f_df.columns = [c.strip() if isinstance(c, str) else c for c in f_df.columns]
 
-            # फॉर्म के कॉलम की पहचान
             roll_col = next((c for c in f_df.columns if 'roll' in c.lower() or 'अनुक्रमांक' in c.lower()), None)
             photo_col = next((c for c in f_df.columns if 'photo' in c.lower() or 'image' in c.lower() or 'फोटो' in c.lower() or 'चित्र' in c.lower()), None)
             short_col = next((c for c in f_df.columns if 'short' in c.lower() or 'अल्पकालिक' in c.lower()), None)
